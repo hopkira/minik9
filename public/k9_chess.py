@@ -3,15 +3,39 @@ import chess.engine
 import random
 import subprocess
 import requests
-import RPi.GPIO as GPIO
+import sys
+import time
+import os
+import pyaudio
+import string
+from ibm_watson import SpeechToTextV1
+from ibm_watson.websocket import RecognizeCallback, AudioSource
+from threading import Thread
+from queue import Queue, Full
 
-GPIO.setmode(GPIO.BCM)
-pin_list = [16,20]
-GPIO.setup(pin_list, GPIO.OUT)
+sim = False
+
+if (len(sys.argv)>1):
+    if (sys.argv[1] == "test"):
+        sim = True
+        print ("Executing in simulation mode")
+
+if not sim:
+    print ("Importing Pi GPIO library...")
+    import RPi.GPIO as GPIO
+    GPIO.setmode(GPIO.BCM)
+    pin_list = [16,20]
+    GPIO.setup(pin_list, GPIO.OUT)
+    on = GPIO.HIGH
+    off = GPIO.LOW
+    engine = chess.engine.SimpleEngine.popen_uci("/usr/games/stockfish")
+else:
+    on = True
+    off = False
+    engine = chess.engine.SimpleEngine.popen_uci("./stockfish")
 
 INFO_SCORE = 2
-
-engine = chess.engine.SimpleEngine.popen_uci("/usr/games/stockfish")
+    
 board = chess.Board()
 
 pieces = ("Pawn","Knight","Bishop","Rook","Queen","King")
@@ -31,11 +55,12 @@ context = {}
 
 eyes = 16
 back = 20
-on = GPIO.HIGH
-off = GPIO.LOW
 
 def light(pin,value):
-    GPIO.output(pin,value)
+    if not sim:
+        GPIO.output(pin,value)
+    else:
+        print("GPIO pin "+str(pin)+" set to "+str(value)+".")
 
 def send_board(board):
     URL = "http://localhost:3001/api/board"
@@ -82,28 +107,123 @@ def speak(text: str, pitch: int=50, voice: str='en', speed: int=175, capital: in
 def k9speak(text: str) -> int:
     light(eyes,on)
     speak(text, pitch=99, voice='en-uk-rp', speed=180, capital=20)
-    light(eyes,off)
+    light(eyes,off)  
 
+stop_now = False
+
+def listen_for_text(context="none"):
+    global stop_now, text, q, service, audio_source
+    stop_now=False
+    # print("1. Context is "+context)
+    iam_apikey = os.environ['IAM_APIKEY']
+    service = SpeechToTextV1(
+    url = 'https://gateway-lon.watsonplatform.net/speech-to-text/api',
+    iam_apikey = iam_apikey
+    )
+    CHUNK = 1024
+    BUF_MAX_SIZE = CHUNK * 10
+    q = Queue(maxsize=int(round(BUF_MAX_SIZE / CHUNK)))
+    audio_source = AudioSource(q, True, True)
+    FORMAT = pyaudio.paInt16
+    CHANNELS = 1
+    RATE = 44100
+    audio = pyaudio.PyAudio()
+    stream = audio.open(
+        format=FORMAT,
+        channels=CHANNELS,
+        rate=RATE,
+        input=True,
+        frames_per_buffer=CHUNK,
+        stream_callback=pyaudio_callback,
+        start=False
+    )
+    stream.start_stream()
+    recognize_thread = Thread(target=recognize_using_websocket, args=())       
+    recognize_thread.start()
+    while not stop_now:
+        pass
+    stream.stop_stream()
+    stream.close()
+    audio.terminate()
+    audio_source.completed_recording()
+    return text
+
+def listen_for_move():
+    move = listen_for_text()
+    return move
+
+class MyRecognizeCallback(RecognizeCallback):
+    def __init__(self):
+        RecognizeCallback.__init__(self)
+
+    def on_transcription(self, transcript):
+        global stop_now, text
+        text = transcript[0]['transcript']
+        stop_now = True
+        light(back,off)
+
+    def on_connected(self):
+        print('Connecting...')
+
+    def on_error(self, error):
+        print('Error received: {}'.format(error))
+
+    def on_inactivity_timeout(self, error):
+        print('Inactivity timeout: {}'.format(error))
+
+    def on_listening(self):
+        print('Speak now!')
+        light(back,on)
+
+    def on_close(self):
+        print("Connection closed")
+
+def recognize_using_websocket(*args):
+    # print("2. The context I got was "+str(args))
+    global service, audio_source
+    mycallback = MyRecognizeCallback()
+    service.recognize_using_websocket(audio=audio_source,
+                                      content_type='audio/l16; rate=44100',
+                                      recognize_callback=mycallback,
+                                      interim_results=True,
+                                      language_customization_id='43d9a145-e6df-47a6-9a91-71315681694d',
+                                      customization_weight=0.8
+                                      )
+
+def pyaudio_callback(in_data, frame_count, time_info, status):
+    global q
+    try:
+        q.put(in_data)
+    except Full:
+        pass # discard
+    return (None, pyaudio.paContinue)  
+
+print("Turning lights off...")
 light(back,off)
 light(eyes,off)
+print("Lights turned off...")
 
 k9speak("what is your name?")
-light(back,on)
-name = input ("What is your name? ")
-light(back,off)
-k9speak("Hello " + name + "!")
+name = listen_for_text()
+# name = input ("What is your name? ")
+k9speak("Hello " + str(name) + "!")
+
 k9speak("Do you want to play black or white?")
-light(back,on)
+
 while True:
-    side = input ("Do you want to play black or white? ")
-    if (side == "white" or side == "black"):
-        if side == "white":
-            player = chess.WHITE
-        else:
-            player = chess.BLACK
+    # side = input ("Do you want to play black or white? ")
+    side = str(listen_for_text())
+    print("I heard: "+side)
+    if "white" in side or "what" in side:
+        player = chess.WHITE
+        side = "white"
         break
-light(back,off)
-k9speak("Affimative, you are playing " + side)
+    if "black" in side:
+        player = chess.BLACK
+        side = "black"
+        break
+
+k9speak("Affirmative. You are playing " + str(side))
 
 while not board.is_game_over():
     send_board(board.board_fen())
@@ -115,16 +235,21 @@ while not board.is_game_over():
         score = result.score.pov(chess.WHITE)
         # prompt player for their move
         k9speak(random_msg(your_move))
-        light(back,on)
         while True:
-            move_str = input("Move?: ")
+            move_str = str(listen_for_move())
+            # move_str = input("Move?: ")
+            print("I heard: "+move_str)
+            move_str = move_str.translate({ord(c): None for c in string.whitespace})
+            if len(move_str)>4:
+                move_str = move_str[0:2] + move_str[3:5]
+                move_str = move_str.lower()
+            print("I converted it to: "+move_str)
             try:
                 move = chess.Move.from_uci(move_str)
                 if move in board.legal_moves:
                     break
             except:
                 k9speak(random_msg(invalid_move))
-        light(back,off)
     else:
         # determine the best move for K9 and analyse the board
         result = engine.play(board=board, limit=chess.engine.Limit(time=0.100),info=INFO_SCORE)

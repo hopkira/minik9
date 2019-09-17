@@ -8,8 +8,10 @@ from queue import Queue, Full
 
 stop_now = False
 
-def listen_for_move():
+def listen_for_text(context="none"):
     global stop_now, text, q, service, audio_source
+    stop_now=False
+    # print("1. Context is "+context)
     iam_apikey = os.environ['IAM_APIKEY']
     service = SpeechToTextV1(
     url = 'https://gateway-lon.watsonplatform.net/speech-to-text/api',
@@ -33,7 +35,7 @@ def listen_for_move():
         start=False
     )
     stream.start_stream()
-    recognize_thread = Thread(target=recognize_using_websocket, args=())
+    recognize_thread = Thread(target=recognize_using_websocket, args=())       
     recognize_thread.start()
     while not stop_now:
         pass
@@ -43,6 +45,10 @@ def listen_for_move():
     audio_source.completed_recording()
     return text
 
+def listen_for_move():
+    move = listen_for_text()
+    return move
+
 class MyRecognizeCallback(RecognizeCallback):
     def __init__(self):
         RecognizeCallback.__init__(self)
@@ -51,9 +57,10 @@ class MyRecognizeCallback(RecognizeCallback):
         global stop_now, text
         text = transcript[0]['transcript']
         stop_now = True
+        light(back,off)
 
     def on_connected(self):
-        print('Connection was successful')
+        print('Connecting...')
 
     def on_error(self, error):
         print('Error received: {}'.format(error))
@@ -62,12 +69,14 @@ class MyRecognizeCallback(RecognizeCallback):
         print('Inactivity timeout: {}'.format(error))
 
     def on_listening(self):
-        print('Service is listening')
+        print('Speak now!')
+        light(back,on)
 
     def on_close(self):
         print("Connection closed")
 
 def recognize_using_websocket(*args):
+    # print("2. The context I got was "+str(args))
     global service, audio_source
     mycallback = MyRecognizeCallback()
     service.recognize_using_websocket(audio=audio_source,

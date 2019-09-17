@@ -3,10 +3,15 @@ import chess.engine
 import random
 import subprocess
 import requests
+import RPi.GPIO as GPIO
+
+GPIO.setmode(GPIO.BCM)
+pin_list = [16,20]
+GPIO.setup(pin_list, GPIO.OUT)
 
 INFO_SCORE = 2
 
-engine = chess.engine.SimpleEngine.popen_uci("/Users/hopkira/Documents/touchscreen/k9sidepanel/public/stockfish")
+engine = chess.engine.SimpleEngine.popen_uci("/usr/games/stockfish")
 board = chess.Board()
 
 pieces = ("Pawn","Knight","Bishop","Rook","Queen","King")
@@ -23,6 +28,14 @@ mate_lose = ("this is not possible","how can I be losing?","you are the better p
 draw = ("We are heading for a draw","The game is looking very even", "This is a well-balanced game", "We are drawing, who will make the winning move?")
 instruction = ("Please move my","I will move","I will move my","My move is")
 context = {}
+
+eyes = 16
+back = 20
+on = GPIO.HIGH
+off = GPIO.LOW
+
+def light(pin,value):
+    GPIO.output(pin,value)
 
 def send_board(board):
     URL = "http://localhost:3001/api/board"
@@ -67,13 +80,20 @@ def speak(text: str, pitch: int=50, voice: str='en', speed: int=175, capital: in
     return subprocess.run(['espeak','-v',voice,'-p',str(pitch),'-s',str(speed),'-k',str(capital),text]).returncode
 
 def k9speak(text: str) -> int:
+    light(eyes,on)
     speak(text, pitch=99, voice='en-uk-rp', speed=180, capital=20)
+    light(eyes,off)
+
+light(back,off)
+light(eyes,off)
 
 k9speak("what is your name?")
-
+light(back,on)
 name = input ("What is your name? ")
+light(back,off)
 k9speak("Hello " + name + "!")
 k9speak("Do you want to play black or white?")
+light(back,on)
 while True:
     side = input ("Do you want to play black or white? ")
     if (side == "white" or side == "black"):
@@ -82,6 +102,7 @@ while True:
         else:
             player = chess.BLACK
         break
+light(back,off)
 k9speak("Affimative, you are playing " + side)
 
 while not board.is_game_over():
@@ -94,6 +115,7 @@ while not board.is_game_over():
         score = result.score.pov(chess.WHITE)
         # prompt player for their move
         k9speak(random_msg(your_move))
+        light(back,on)
         while True:
             move_str = input("Move?: ")
             try:
@@ -102,6 +124,7 @@ while not board.is_game_over():
                     break
             except:
                 k9speak(random_msg(invalid_move))
+        light(back,off)
     else:
         # determine the best move for K9 and analyse the board
         result = engine.play(board=board, limit=chess.engine.Limit(time=0.100),info=INFO_SCORE)

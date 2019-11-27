@@ -135,7 +135,8 @@ def listen_for_text(context="none"):
         input=True,
         frames_per_buffer=CHUNK,
         stream_callback=pyaudio_callback,
-        start=False
+        start=False,
+	input_device_index=2
     )
     stream.start_stream()
     recognize_thread = Thread(target=recognize_using_websocket, args=())       
@@ -236,13 +237,13 @@ while not board.is_game_over():
         # prompt player for their move
         k9speak(random_msg(your_move))
         while True:
-            move_str = str(listen_for_move())
+            move_str = str(listen_for_move().lower())
             # move_str = input("Move?: ")
             print("I heard: "+move_str)
             move_str = move_str.translate({ord(c): None for c in string.whitespace})
+            move_str = move_str.replace("to","2")
             if len(move_str)>4:
                 move_str = move_str[0:2] + move_str[3:5]
-                move_str = move_str.lower()
             print("I converted it to: "+move_str)
             try:
                 move = chess.Move.from_uci(move_str)
